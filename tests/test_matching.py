@@ -230,3 +230,47 @@ def test_run_counts_each_outcome(session):
     assert counters["examined"] == 2
     assert counters["auto"] == 1
     assert counters["unmatched"] == 1
+
+
+# ------------------------------------------------------------------ editions
+
+
+def test_the_same_edition_on_both_sides_matches(session):
+    sp = _supplier_product(session, "Cyberpunk 2077 Ultimate Edition Standard")
+    _store_product(
+        session, "10000000000020", "Cyberpunk 2077 Ultimate Edition (PC) - Steam Key - GLOBAL"
+    )
+    outcome = MatchingEngine(session).evaluate(sp)
+    assert outcome.status is MappingStatus.AUTO
+
+
+def test_a_different_edition_is_rejected_outright(session):
+    """A Deluxe key is not a Standard key -- selling one as the other is costly."""
+    supplier = parse_title("Cyberpunk 2077 Deluxe Edition")
+    store = parse_title("Cyberpunk 2077 Standard Edition (PC) - Steam Key - GLOBAL")
+    score, reasons = score_pair(supplier, store)
+    assert score == 0.0
+    assert any("edition mismatch" in r for r in reasons)
+
+
+def test_an_edition_stated_on_only_one_side_is_not_a_mismatch(session):
+    """Suppliers label the base SKU "Standard"; stores usually say nothing."""
+    supplier = parse_title("Red Dead Redemption 2 Standard")
+    store = parse_title("Red Dead Redemption 2 (PC) - Rockstar Key - GLOBAL")
+    score, _ = score_pair(supplier, store)
+    assert score >= 0.92
+
+
+def test_shortlisting_does_not_hinge_on_one_token(session):
+    """The anchor word may simply not appear in the store's wording.
+
+    "EA SPORTS FC 26 Standard" has "standard" as its longest token, and no G2A
+    title contains it.  Anchoring on that one word alone found nothing at all.
+    """
+    sp = _supplier_product(session, "EA SPORTS FC 26 Standard")
+    _store_product(
+        session, "10000000000021", "EA SPORTS FC 26 (PC) - EA App Key - EUROPE"
+    )
+    candidates = MatchingEngine(session).find_candidates(sp)
+    assert candidates, "the product must be found even though 'standard' is absent"
+    assert candidates[0].product_ext_id == "10000000000021"

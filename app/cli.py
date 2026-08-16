@@ -262,6 +262,110 @@ def map_reject(mapping_id: int, note: Optional[str] = typer.Option(None), by: st
         _echo({"mapping_id": mapping.id, "status": mapping.status})
 
 
+@map_app.command("price")
+def map_price(
+    mapping_id: int,
+    markup: Optional[float] = typer.Option(None, help="Markup %% for this product only."),
+    fixed: Optional[float] = typer.Option(None, help="Sell at exactly this price."),
+    clear: bool = typer.Option(False, help="Drop the overrides, use the global markup."),
+    pause: bool = typer.Option(False, help="Stop syncing this product."),
+    resume: bool = typer.Option(False, help="Resume syncing this product."),
+) -> None:
+    """Set the price of one product.
+
+    Takes effect on the next offer sync, not immediately -- which is what keeps
+    the bridge inside the store's price-change budget.
+    """
+    from app.models import ProductMapping, StoreProduct, SupplierProduct
+    from app.services.pricing import Pricer
+
+    with session_scope() as session:
+        mapping = session.get(ProductMapping, mapping_id)
+        if mapping is None:
+            typer.echo(f"mapping {mapping_id} not found", err=True)
+            raise typer.Exit(1)
+        if clear:
+            mapping.markup_percent_override = None
+            mapping.fixed_price_override = None
+        if markup is not None:
+            mapping.markup_percent_override = markup
+        if fixed is not None:
+            mapping.fixed_price_override = fixed
+        if pause:
+            mapping.sync_enabled = False
+        if resume:
+            mapping.sync_enabled = True
+        session.flush()
+
+        supplier_product = session.get(SupplierProduct, mapping.supplier_product_id)
+        store_product = (
+            session.get(StoreProduct, mapping.store_product_id)
+            if mapping.store_product_id
+            else None
+        )
+        breakdown = Pricer(session).compute(supplier_product, mapping, store_product)
+        _echo(
+            {
+                "mapping_id": mapping.id,
+                "product": supplier_product.name,
+                "sync_enabled": mapping.sync_enabled,
+                "cost": float(breakdown.supplier_price),
+                "fx_rate": float(breakdown.fx_rate),
+                "markup_percent": float(breakdown.markup_percent),
+                "new_price": float(breakdown.final_price),
+                "applied": "on the next offer sync",
+            }
+        )
+
+
+@map_app.command("list")
+def map_list(
+    search: Optional[str] = typer.Option(None, help="Substring of the product name."),
+    limit: int = typer.Option(30),
+) -> None:
+    """Show mapped products with their cost, markup and sell price."""
+    from sqlalchemy import func, select
+
+    from app.config import get_settings
+    from app.models import MappingStatus, ProductMapping, StoreProduct, SupplierProduct
+    from app.services.pricing import Pricer
+
+    settings = get_settings()
+    with session_scope() as session:
+        stmt = (
+            select(ProductMapping, SupplierProduct, StoreProduct)
+            .join(SupplierProduct, ProductMapping.supplier_product_id == SupplierProduct.id)
+            .join(StoreProduct, ProductMapping.store_product_id == StoreProduct.id)
+            .where(
+                ProductMapping.status.in_(
+                    [MappingStatus.AUTO.value, MappingStatus.APPROVED.value]
+                )
+            )
+        )
+        if search:
+            stmt = stmt.where(func.lower(SupplierProduct.name).like(f"%{search.lower()}%"))
+        pricer = Pricer(session, settings=settings)
+        rows = session.execute(stmt.limit(limit)).all()
+        _echo(
+            [
+                {
+                    "mapping_id": m.id,
+                    "product": sp.name,
+                    "stock": sp.stock,
+                    "cost_usd": float(sp.price_supplier),
+                    "markup": (
+                        m.markup_percent_override
+                        if m.markup_percent_override is not None
+                        else settings.default_markup_percent
+                    ),
+                    "sell_price": float(pricer.compute(sp, m, g).final_price),
+                    "sync_enabled": m.sync_enabled,
+                }
+                for m, sp, g in rows
+            ]
+        )
+
+
 @app.command("worker")
 def worker() -> None:
     """Run the scheduled jobs in the foreground (what the container starts)."""

@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge control panel</title>
+<!--
+  Deliberately one self-contained file: no CDN, no build step, no framework.
+  The container has no internet access to a CDN in a locked-down deployment, and
+  a dashboard that cannot render without one is a dashboard that fails exactly
+  when you need it.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16191d;
+    --muted: #667085;
+    --line: #e3e6ea;
+    --accent: #2563eb;
+    --ok: #067647;
+    --ok-bg: #ecfdf3;
+    --warn: #b54708;
+    --warn-bg: #fffaeb;
+    --bad: #b42318;
+    --bad-bg: #fef3f2;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --panel: #1c2024; --ink: #e8eaed; --muted: #98a2b3;
+      --line: #2b3138; --accent: #5b8cf7; --ok: #6ce9a6; --ok-bg: #05301f;
+      --warn: #fec84b; --warn-bg: #3a2a06; --bad: #fda29b; --bad-bg: #3d1512;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 14px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  .spacer { flex: 1; }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+  .tab {
+    padding: 9px 14px; cursor: pointer; border: none; background: none; color: var(--muted);
+    font: inherit; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  .card .n { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .panel-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 900px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .name { max-width: 340px; }
+  .name small { color: var(--muted); display: block; font-size: 12px; }
+  input, select, button { font: inherit; color: inherit; }
+  input, select {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input:disabled { opacity: .45; cursor: not-allowed; }
+  input.mini { width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 7px 12px; cursor: pointer; font-weight: 500;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button.ghost:hover { color: var(--ink); }
+  button.danger { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
+  button:disabled { opacity: 0.5; cursor: default; filter: none; }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 12px; font-weight: 500;
+    background: var(--bg); color: var(--muted); border: 1px solid var(--line); white-space: nowrap;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  .muted { color: var(--muted); }
+  .empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+  .toast {
+    position: fixed; right: 18px; bottom: 18px; background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: var(--radius); padding: 11px 14px; box-shadow: 0 6px 22px rgba(0,0,0,.14);
+    max-width: 380px; opacity: 0; transform: translateY(6px); transition: opacity .18s, transform .18s;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.bad { border-left-color: var(--bad); }
+  .hint { font-size: 12px; color: var(--muted); padding: 10px 14px; border-top: 1px solid var(--line); }
+  dl.kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 22px; padding: 14px; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .gate { max-width: 420px; margin: 90px auto; }
+  .gate .panel { padding: 20px; }
+  .gate label { display: block; margin-bottom: 8px; font-weight: 500; }
+  .gate input { width: 100%; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <div class="panel">
+    <label for="tok">Admin token</label>
+    <input id="tok" type="password" placeholder="value of ADMIN_API_TOKEN" autocomplete="current-password">
+    <button id="tok-go">Open control panel</button>
+    <p class="muted" style="margin-bottom:0">This is the <code>ADMIN_API_TOKEN</code> from your <code>.env</code> file.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>Bridge control panel</h1>
+  <span id="hdr-state" class="pill">loading</span>
+  <span class="spacer"></span>
+  <button id="refresh" class="ghost">Refresh</button>
+  <button id="logout" class="ghost">Sign out</button>
+</header>
+
+<main>
+  <div class="cards" id="cards"></div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="offers" aria-selected="true">Offers &amp; prices</button>
+    <button class="tab" role="tab" data-tab="review" aria-selected="false">Review queue <span id="review-count" class="pill"></span></button>
+    <button class="tab" role="tab" data-tab="runs" aria-selected="false">Sync history</button>
+    <button class="tab" role="tab" data-tab="config" aria-selected="false">Settings</button>
+  </div>
+
+  <section id="tab-offers">
+    <div class="panel">
+      <div class="panel-head">
+        <input id="search" type="search" placeholder="Search product name..." style="min-width:260px">
+        <select id="state-filter">
+          <option value="">All statuses</option>
+          <option value="live">Live</option>
+          <option value="out_of_stock">Out of stock</option>
+          <option value="pending">Not pushed yet</option>
+          <option value="failed">Failed</option>
+        </select>
+        <span class="spacer"></span>
+        <span class="muted" id="offers-count"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th class="num">Stock</th>
+              <th class="num">Cost</th>
+              <th class="num">Markup %</th>
+              <th class="num">Fixed price</th>
+              <th class="num">Sell price</th>
+              <th class="num">On G2A now</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="offers-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">
+        Markup and fixed price are per product. Leave the fixed price blank to price from cost and markup.
+        A saved change is applied on the next price sync, not immediately &mdash; that is what keeps the
+        bridge inside G2A's limit on price changes per product per hour.
+      </p>
+    </div>
+  </section>
+
+  <section id="tab-review" hidden>
+    <div class="panel">
+      <div class="panel-head"><strong>Products the matcher was not confident about</strong></div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Supplier product</th>
+              <th class="num">Score</th>
+              <th>Suggested G2A product</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="review-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">
+        Approving links the two permanently, so future price and stock updates stay on the right offer.
+        Rejecting means that pairing is never suggested again.
+      </p>
+    </div>
+  </section>
+
+  <section id="tab-runs" hidden>
+    <div class="panel">
+      <div class="panel-head"><strong>Recent sync runs</strong></div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Job</th><th>Result</th><th>Started</th><th>What it did</th></tr></thead>
+          <tbody id="runs-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-config" hidden>
+    <div class="panel">
+      <div class="panel-head"><strong>Current settings</strong></div>
+      <dl class="kv" id="config-body"></dl>
+      <p class="hint">
+        These come from your <code>.env</code> file and are read-only here. To change one, edit
+        <code>.env</code> and restart: <code>docker compose up -d</code>. The default markup applies to
+        every product that has no per-product override in the table above.
+      </p>
+    </div>
+  </section>
+</main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var TOKEN_KEY = "bridge_admin_token";
+  var token = localStorage.getItem(TOKEN_KEY) || "";
+  var offers = [];
+
+  function $(id) { return document.getElementById(id); }
+
+  function toast(message, isError) {
+    var el = $("toast");
+    el.textContent = message;
+    el.className = "toast show" + (isError ? " bad" : "");
+    clearTimeout(el._timer);
+    el._timer = setTimeout(function () { el.className = "toast"; }, 3800);
+  }
+
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign(
+      { "X-Admin-Token": token, "Content-Type": "application/json" },
+      options.headers || {}
+    );
+    return fetch(path, options).then(function (response) {
+      if (response.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        showGate();
+        throw new Error("Token rejected");
+      }
+      return response.json().then(function (body) {
+        if (!response.ok) throw new Error(body.detail || ("HTTP " + response.status));
+        return body;
+      });
+    });
+  }
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function money(value) {
+    return value === null || value === undefined ? "&mdash;" : Number(value).toFixed(2);
+  }
+
+  // ------------------------------------------------------------------ gate
+  function showGate() {
+    $("gate").hidden = false;
+    $("app").hidden = true;
+  }
+  function showApp() {
+    $("gate").hidden = true;
+    $("app").hidden = false;
+    loadAll();
+  }
+  $("tok-go").onclick = function () {
+    token = $("tok").value.trim();
+    if (!token) return;
+    localStorage.setItem(TOKEN_KEY, token);
+    showApp();
+  };
+  $("tok").onkeydown = function (event) { if (event.key === "Enter") $("tok-go").click(); };
+  $("logout").onclick = function () {
+    localStorage.removeItem(TOKEN_KEY);
+    token = "";
+    showGate();
+  };
+
+  // ------------------------------------------------------------------ tabs
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.onclick = function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (other) {
+        other.setAttribute("aria-selected", String(other === tab));
+      });
+      ["offers", "review", "runs", "config"].forEach(function (name) {
+        $("tab-" + name).hidden = name !== tab.dataset.tab;
+      });
+    };
+  });
+
+  // --------------------------------------------------------------- loaders
+  function loadStatus() {
+    return api("/status").then(function (data) {
+      var mappings = data.mappings || {};
+      var offerStates = data.offers || {};
+      var pending = mappings.pending || 0;
+      $("review-count").textContent = pending ? String(pending) : "";
+      $("cards").innerHTML = [
+        card(data.supplier_products.active, "Supplier products"),
+        card(data.supplier_products.in_stock, "In stock"),
+        card((mappings.auto || 0) + (mappings.approved || 0), "Mapped"),
+        card(pending, "Awaiting review"),
+        card(offerStates.live || 0, "Live offers"),
+        card(offerStates.failed || 0, "Failed"),
+      ].join("");
+
+      var runs = data.recent_runs || [];
+      var bad = runs.filter(function (r) { return r.state === "failed"; }).length;
+      var header = $("hdr-state");
+      header.textContent = bad ? bad + " failed run(s)" : "healthy";
+      header.className = "pill " + (bad ? "bad" : "ok");
+
+      $("runs-body").innerHTML = runs.length ? runs.map(function (run) {
+        var cls = run.state === "success" ? "ok" : (run.state === "failed" ? "bad" : "warn");
+        return "<tr><td>" + esc(run.kind) + "</td>" +
+          "<td><span class='pill " + cls + "'>" + esc(run.state) + "</span></td>" +
+          "<td class='muted'>" + esc((run.started_at || "").replace("T", " ").slice(0, 19)) + "</td>" +
+          "<td class='muted'>" + esc(run.error || JSON.stringify(run.stats || {})) + "</td></tr>";
+      }).join("") : "<tr><td colspan='4' class='empty'>No sync has run yet.</td></tr>";
+    });
+  }
+
+  function card(value, label) {
+    return "<div class='card'><div class='n'>" + esc(value) + "</div><div class='k'>" + esc(label) + "</div></div>";
+  }
+
+  function loadOffers() {
+    var query = new URLSearchParams();
+    var search = $("search").value.trim();
+    var state = $("state-filter").value;
+    if (search) query.set("search", search);
+    if (state) query.set("state", state);
+    return api("/offers?" + query.toString()).then(function (rows) {
+      offers = rows;
+      $("offers-count").textContent = rows.length + " product" + (rows.length === 1 ? "" : "s");
+      $("offers-body").innerHTML = rows.length ? rows.map(offerRow).join("")
+        : "<tr><td colspan='9' class='empty'>Nothing mapped yet. Run the catalogue sync and matching first.</td></tr>";
+      wireOfferRows();
+    });
+  }
+
+  function offerRow(row) {
+    var statusPill;
+    if (!row.sync_enabled) statusPill = "<span class='pill'>Paused</span>";
+    else if (row.state === "live") statusPill = "<span class='pill ok'>Live</span>";
+    else if (row.state === "out_of_stock") statusPill = "<span class='pill warn'>Out of stock</span>";
+    else if (row.state === "failed") statusPill = "<span class='pill bad'>Failed</span>";
+    else statusPill = "<span class='pill'>Not pushed</span>";
+
+    var pending = row.price_pending
+      ? " <span class='pill warn' title='Will be sent on the next sync'>pending</span>" : "";
+    var budget = row.price_changes_this_hour >= row.price_budget
+      ? " <span class='pill warn' title='G2A price-change budget for this product is used up this hour'>limit</span>" : "";
+    var error = row.last_error
+      ? "<small class='muted' title='" + esc(row.last_error) + "'>" + esc(row.last_error.slice(0, 70)) + "</small>" : "";
+
+    return "<tr data-id='" + row.mapping_id + "'>" +
+      "<td class='name'><strong>" + esc(row.supplier_name) + "</strong>" +
+        "<small>&rarr; " + esc(row.store_name) + "</small>" + error + "</td>" +
+      "<td class='num'>" + esc(row.stock) + "</td>" +
+      "<td class='num muted'>" + money(row.supplier_price) + " " + esc(row.supplier_currency) + "</td>" +
+      "<td class='num'><input class='mini markup' type='number' step='0.5' value='" +
+        esc(row.markup_percent) + "'" + (row.fixed_price_override !== null ? " disabled" : "") + "></td>" +
+      "<td class='num'><input class='mini fixed' type='number' step='0.01' placeholder='&mdash;' value='" +
+        (row.fixed_price_override === null ? "" : esc(row.fixed_price_override)) + "'></td>" +
+      "<td class='num'><strong>" + money(row.computed_price) + "</strong>" + pending + "</td>" +
+      "<td class='num muted'>" + money(row.pushed_price) + budget + "</td>" +
+      "<td>" + statusPill + "</td>" +
+      "<td><button class='save'>Save</button> " +
+        "<button class='ghost toggle'>" + (row.sync_enabled ? "Pause" : "Resume") + "</button></td>" +
+      "</tr>";
+  }
+
+  function wireOfferRows() {
+    Array.prototype.forEach.call($("offers-body").querySelectorAll("tr[data-id]"), function (tr) {
+      var id = tr.dataset.id;
+      var row = offers.filter(function (o) { return String(o.mapping_id) === id; })[0];
+      var markup = tr.querySelector(".markup");
+      var fixed = tr.querySelector(".fixed");
+
+      // A fixed price wins over markup, so grey the markup out to make that
+      // visible rather than leaving two fields that appear to both apply.
+      fixed.oninput = function () { markup.disabled = fixed.value.trim() !== ""; };
+
+      tr.querySelector(".save").onclick = function () {
+        var button = this;
+        button.disabled = true;
+        var hasFixed = fixed.value.trim() !== "";
+        api("/mappings/" + id + "/pricing", {
+          method: "POST",
+          body: JSON.stringify({
+            markup_percent_override: hasFixed ? null : Number(markup.value),
+            fixed_price_override: hasFixed ? Number(fixed.value) : null,
+            clear_fixed_price: !hasFixed
+          })
+        }).then(function (result) {
+          var preview = result.preview || {};
+          toast(preview.new_price !== undefined
+            ? "Saved. New price " + Number(preview.new_price).toFixed(2) + " - sent on the next sync."
+            : "Saved.");
+          return loadOffers();
+        }).catch(function (error) {
+          toast(error.message, true);
+        }).finally(function () { button.disabled = false; });
+      };
+
+      tr.querySelector(".toggle").onclick = function () {
+        var button = this;
+        button.disabled = true;
+        api("/mappings/" + id + "/pricing", {
+          method: "POST",
+          body: JSON.stringify({ sync_enabled: !row.sync_enabled })
+        }).then(function () {
+          toast(row.sync_enabled ? "Paused. This product will not be updated." : "Resumed.");
+          return loadOffers();
+        }).catch(function (error) {
+          toast(error.message, true);
+        }).finally(function () { button.disabled = false; });
+      };
+    });
+  }
+
+  function loadReview() {
+    return api("/mappings?status=pending&limit=100").then(function (rows) {
+      $("review-body").innerHTML = rows.length ? rows.map(function (row) {
+        var options = (row.candidates || []).map(function (candidate, index) {
+          return "<option value='" + esc(candidate.store_product_id) + "'" +
+            (index === 0 ? " selected" : "") + ">" +
+            esc(candidate.name) + "  (" + Number(candidate.score).toFixed(2) + ")</option>";
+        }).join("");
+        return "<tr data-id='" + row.mapping_id + "'>" +
+          "<td class='name'><strong>" + esc(row.supplier_name) + "</strong>" +
+            "<small>" + money(row.supplier_price) + " USD, stock " + esc(row.supplier_stock) + "</small></td>" +
+          "<td class='num'>" + (row.score === null ? "&mdash;" : Number(row.score).toFixed(2)) + "</td>" +
+          "<td><select class='pick' style='max-width:420px'>" + options + "</select></td>" +
+          "<td><button class='approve'>Approve</button> " +
+            "<button class='danger reject'>Reject</button></td></tr>";
+      }).join("") : "<tr><td colspan='4' class='empty'>Nothing waiting. Every product was matched confidently.</td></tr>";
+
+      Array.prototype.forEach.call($("review-body").querySelectorAll("tr[data-id]"), function (tr) {
+        var id = tr.dataset.id;
+        var pick = tr.querySelector(".pick");
+        tr.querySelector(".approve").onclick = function () {
+          this.disabled = true;
+          api("/mappings/" + id + "/approve", {
+            method: "POST",
+            body: JSON.stringify({
+              store_product_id: pick && pick.value ? Number(pick.value) : null,
+              reviewed_by: "control-panel"
+            })
+          }).then(function () {
+            toast("Approved.");
+            return loadAll();
+          }).catch(function (error) { toast(error.message, true); });
+        };
+        tr.querySelector(".reject").onclick = function () {
+          this.disabled = true;
+          api("/mappings/" + id + "/reject", {
+            method: "POST",
+            body: JSON.stringify({ reviewed_by: "control-panel" })
+          }).then(function () {
+            toast("Rejected. It will not be suggested again.");
+            return loadAll();
+          }).catch(function (error) { toast(error.message, true); });
+        };
+      });
+    });
+  }
+
+  function loadConfig() {
+    return api("/settings").then(function (data) {
+      var labels = {
+        default_markup_percent: "Default markup %",
+        supplier_currency: "Supplier currency",
+        store_currency: "Store currency",
+        fx_rate_pinned: "Pinned FX rate",
+        price_rounding: "Price rounding",
+        min_offer_price: "Minimum offer price",
+        price_stock_sync_minutes: "Price/stock sync every (min)",
+        catalog_sync_minutes: "Catalogue sync every (min)",
+        price_change_budget_per_product_per_hour: "Price changes allowed per product/hour",
+        match_auto_accept_score: "Auto-accept match score",
+        match_review_score: "Send to review above score"
+      };
+      $("config-body").innerHTML = Object.keys(labels).map(function (key) {
+        var value = data[key];
+        return "<dt>" + esc(labels[key]) + "</dt><dd>" +
+          esc(value === null || value === undefined ? "live daily rate" : value) + "</dd>";
+      }).join("");
+    });
+  }
+
+  function loadAll() {
+    return Promise.all([loadStatus(), loadOffers(), loadReview(), loadConfig()])
+      .catch(function (error) { toast(error.message, true); });
+  }
+
+  var searchTimer;
+  $("search").oninput = function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadOffers, 250);
+  };
+  $("state-filter").onchange = loadOffers;
+  $("refresh").onclick = loadAll;
+
+  if (token) { showApp(); } else { showGate(); }
+})();
+</script>
+</body>
+</html>

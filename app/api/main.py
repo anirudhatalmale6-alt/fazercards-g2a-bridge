@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -98,7 +100,67 @@ class RejectIn(BaseModel):
     note: str | None = None
 
 
+class OfferOut(BaseModel):
+    """One product as it stands: what it costs us, what it sells for, and why."""
+
+    mapping_id: int
+    offer_ext_id: str | None = None
+    store_product_ext_id: str
+    supplier_name: str
+    store_name: str
+    state: str
+    sync_enabled: bool
+    stock: int
+    supplier_price: float
+    supplier_currency: str
+    markup_percent: float
+    markup_is_override: bool
+    fixed_price_override: float | None = None
+    computed_price: float | None = None
+    pushed_price: float | None = None
+    pushed_inventory: int | None = None
+    price_pending: bool = False
+    price_changes_this_hour: int = 0
+    price_budget: int = 0
+    last_pushed_at: dt.datetime | None = None
+    last_error: str | None = None
+
+
+class PricingIn(BaseModel):
+    """Per-product pricing.
+
+    All three fields are optional and independent; send only what you want to
+    change.  Send markup_percent_override = null to fall back to the global
+    default, and fixed_price_override = null to go back to markup pricing.
+    """
+
+    markup_percent_override: float | None = Field(default=None, ge=-90, le=1000)
+    fixed_price_override: float | None = Field(default=None, ge=0)
+    sync_enabled: bool | None = None
+    clear_markup_override: bool = False
+    clear_fixed_price: bool = False
+
+
 # ----------------------------------------------------------------- endpoints
+
+
+_UI_FILE = Path(__file__).with_name("ui.html")
+
+
+@api.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse("/ui")
+
+
+@api.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+def control_panel() -> HTMLResponse:
+    """The control panel.
+
+    Served without the token check: the page itself contains no data, it asks
+    for the token and then calls the same protected endpoints as everything
+    else.  Gating the HTML too would only mean nowhere to type the token in.
+    """
+    return HTMLResponse(_UI_FILE.read_text(encoding="utf-8"))
 
 
 @api.get("/health", tags=["ops"])
@@ -241,6 +303,197 @@ def mapping_candidates(mapping_id: int, session: Session = Depends(get_db)) -> d
         "mapping_id": mapping_id,
         "supplier_name": supplier_product.name,
         "candidates": [c.as_json() for c in candidates],
+    }
+
+
+@api.get(
+    "/offers",
+    response_model=list[OfferOut],
+    tags=["offers"],
+    dependencies=[Depends(require_token)],
+)
+def list_offers(
+    session: Session = Depends(get_db),
+    search: str | None = Query(None, description="Substring of the supplier or store title"),
+    state: str | None = Query(None, description="Filter by offer state"),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[OfferOut]:
+    """Every mapped product with its full price breakdown.
+
+    This is the "what am I selling and for how much" screen.  It shows the
+    supplier cost, the markup actually in force, the price the bridge computes
+    from them, and the price the store is currently holding -- so a difference
+    between the last two is visible rather than something you have to infer.
+    """
+    from app.config import get_settings
+    from app.http.ratelimit import PriceChangeBudget
+    from app.services.pricing import Pricer, PricingError
+
+    settings = get_settings()
+    stmt = (
+        select(ProductMapping, SupplierProduct, StoreProduct, StoreOffer)
+        .join(SupplierProduct, ProductMapping.supplier_product_id == SupplierProduct.id)
+        .join(StoreProduct, ProductMapping.store_product_id == StoreProduct.id)
+        .outerjoin(StoreOffer, StoreOffer.mapping_id == ProductMapping.id)
+        .where(
+            ProductMapping.status.in_(
+                [MappingStatus.AUTO.value, MappingStatus.APPROVED.value]
+            )
+        )
+    )
+    if search:
+        pattern = f"%{search.lower()}%"
+        stmt = stmt.where(
+            func.lower(SupplierProduct.name).like(pattern)
+            | func.lower(StoreProduct.name).like(pattern)
+        )
+    if state:
+        stmt = stmt.where(StoreOffer.state == state)
+
+    rows = session.execute(
+        stmt.order_by(SupplierProduct.name).limit(limit).offset(offset)
+    ).all()
+
+    pricer = Pricer(session, settings=settings)
+    budget = PriceChangeBudget(
+        session, store_code="g2a", limit=settings.effective_price_change_budget
+    )
+
+    out: list[OfferOut] = []
+    for mapping, supplier_product, store_product, offer in rows:
+        try:
+            breakdown = pricer.compute(supplier_product, mapping, store_product)
+            computed = float(breakdown.final_price)
+        except PricingError:
+            # A missing FX rate must not blank the whole screen -- show the rest.
+            computed = None
+        pushed = float(offer.pushed_price) if offer and offer.pushed_price else None
+        out.append(
+            OfferOut(
+                mapping_id=mapping.id,
+                offer_ext_id=offer.offer_ext_id if offer else None,
+                store_product_ext_id=store_product.product_ext_id,
+                supplier_name=supplier_product.name,
+                store_name=store_product.name,
+                state=offer.state if offer else "pending",
+                sync_enabled=mapping.sync_enabled,
+                stock=supplier_product.stock,
+                supplier_price=float(supplier_product.price_supplier),
+                supplier_currency=supplier_product.supplier_currency,
+                markup_percent=(
+                    mapping.markup_percent_override
+                    if mapping.markup_percent_override is not None
+                    else settings.default_markup_percent
+                ),
+                markup_is_override=mapping.markup_percent_override is not None,
+                fixed_price_override=(
+                    float(mapping.fixed_price_override)
+                    if mapping.fixed_price_override is not None
+                    else None
+                ),
+                computed_price=computed,
+                pushed_price=pushed,
+                pushed_inventory=offer.pushed_inventory if offer else None,
+                price_pending=(
+                    computed is not None and pushed is not None and abs(computed - pushed) > 0.001
+                ),
+                price_changes_this_hour=budget.used(store_product.product_ext_id),
+                price_budget=settings.effective_price_change_budget,
+                last_pushed_at=offer.last_pushed_at if offer else None,
+                last_error=offer.last_error if offer else None,
+            )
+        )
+    return out
+
+
+@api.post("/mappings/{mapping_id}/pricing", tags=["offers"], dependencies=[Depends(require_token)])
+def set_pricing(
+    mapping_id: int, body: PricingIn, session: Session = Depends(get_db)
+) -> dict[str, Any]:
+    """Change what one product sells for.
+
+    The new price is not pushed here -- it takes effect on the next offer sync,
+    which is also what keeps us inside the store's price-change budget.  The
+    response returns the price that will be sent so the change can be checked
+    before it goes anywhere.
+    """
+    from app.services.pricing import Pricer, PricingError
+
+    mapping = session.get(ProductMapping, mapping_id)
+    if mapping is None:
+        raise HTTPException(404, "mapping not found")
+
+    if body.clear_markup_override:
+        mapping.markup_percent_override = None
+    elif body.markup_percent_override is not None:
+        mapping.markup_percent_override = body.markup_percent_override
+
+    if body.clear_fixed_price:
+        mapping.fixed_price_override = None
+    elif body.fixed_price_override is not None:
+        mapping.fixed_price_override = body.fixed_price_override
+
+    if body.sync_enabled is not None:
+        mapping.sync_enabled = body.sync_enabled
+    session.flush()
+
+    supplier_product = session.get(SupplierProduct, mapping.supplier_product_id)
+    store_product = (
+        session.get(StoreProduct, mapping.store_product_id)
+        if mapping.store_product_id
+        else None
+    )
+    try:
+        breakdown = Pricer(session).compute(supplier_product, mapping, store_product)
+        preview: dict[str, Any] = {
+            "supplier_price": float(breakdown.supplier_price),
+            "fx_rate": float(breakdown.fx_rate),
+            "markup_percent": float(breakdown.markup_percent),
+            "new_price": float(breakdown.final_price),
+            "clamped": breakdown.clamped,
+            "floored": breakdown.floored,
+            "reason": breakdown.reason,
+        }
+    except PricingError as exc:
+        preview = {"error": str(exc)}
+
+    return {
+        "mapping_id": mapping.id,
+        "sync_enabled": mapping.sync_enabled,
+        "markup_percent_override": mapping.markup_percent_override,
+        "fixed_price_override": (
+            float(mapping.fixed_price_override)
+            if mapping.fixed_price_override is not None
+            else None
+        ),
+        "preview": preview,
+        "note": "Applied on the next offer sync.",
+    }
+
+
+@api.get("/settings", tags=["ops"], dependencies=[Depends(require_token)])
+def current_settings() -> dict[str, Any]:
+    """The pricing and scheduling knobs currently in force.
+
+    Values only -- no secrets.  Useful for confirming that a .env change was
+    actually picked up by the running container.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    return {
+        "default_markup_percent": settings.default_markup_percent,
+        "supplier_currency": settings.supplier_currency,
+        "store_currency": settings.store_currency,
+        "fx_rate_pinned": settings.fx_rate_usd_eur,
+        "price_rounding": settings.price_rounding,
+        "min_offer_price": settings.min_offer_price,
+        "price_stock_sync_minutes": settings.price_stock_sync_minutes,
+        "catalog_sync_minutes": settings.catalog_sync_minutes,
+        "price_change_budget_per_product_per_hour": settings.effective_price_change_budget,
+        "match_auto_accept_score": settings.match_auto_accept_score,
+        "match_review_score": settings.match_review_score,
     }
 
 

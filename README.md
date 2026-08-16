@@ -127,6 +127,13 @@ python -m app.cli map run                 match unmapped products
 python -m app.cli map pending             list what needs a decision
 python -m app.cli map approve ID [--store-product-id N]
 python -m app.cli map reject ID [--note "..."]
+python -m app.cli map list                list mapped products with cost/markup/price
+    --search "roblox"
+python -m app.cli map price ID            change one product's price
+    --markup 25                             markup % for this product only
+    --fixed 19.99                           sell at exactly this price
+    --clear                                 back to the global markup
+    --pause / --resume                      stop or resume syncing it
 
 python -m app.cli worker                  run the scheduler in the foreground
 ```
@@ -147,6 +154,35 @@ any mapping — those are the ones to look at by hand.
 
 ---
 
+## Control panel
+
+Open `http://localhost:8000/ui` and paste your `ADMIN_API_TOKEN`. This is where
+prices are changed and offers are checked, without touching the database or the
+command line.
+
+**Offers & prices** — every mapped product with its cost, the markup in force,
+the price the bridge calculates, and the price G2A is currently holding. Edit the
+markup or set a fixed price per product and press Save. A product can be paused
+so the bridge stops updating it while leaving the offer alone.
+
+A saved price shows as `pending` until the next sync sends it. That delay is
+deliberate: pushing immediately on every edit is what burns through G2A's
+per-product hourly price-change cap and gets the product locked.
+
+**Review queue** — products the matcher was not confident about, each with its
+alternatives in a dropdown. Approve links the pair permanently; reject means it
+is never suggested again.
+
+**Sync history** — what each job did and when, including anything that failed.
+
+**Settings** — the pricing and scheduling values currently in force, so you can
+confirm a `.env` change was actually picked up.
+
+The page is one self-contained file with no CDN, no framework and no build step,
+so it renders on a server with no outbound internet access.
+
+---
+
 ## Admin API
 
 Runs on port 8000 (bound to localhost by compose). Every endpoint except
@@ -154,7 +190,11 @@ Runs on port 8000 (bound to localhost by compose). Every endpoint except
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /ui` | The control panel described above. |
 | `GET /health` | Liveness + a real database round-trip. Safe to gate deploys on. |
+| `GET /offers` | Every mapped product with its full price breakdown. |
+| `POST /mappings/{id}/pricing` | Set markup / fixed price / pause for one product. |
+| `GET /settings` | The pricing and scheduling values in force (no secrets). |
 | `GET /status` | Catalogue, mapping and offer counts, plus the last 8 sync runs. |
 | `GET /mappings?status=pending` | The review queue, with alternatives for each. |
 | `POST /mappings/{id}/approve` | Confirm, optionally overriding the target product. |
@@ -203,7 +243,7 @@ dump on its own is not a pile of resellable keys.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests -q          # 70 tests, ~30s
+python -m pytest tests -q          # 87 tests, ~30s
 ```
 
 The suite runs the **real adapters** against in-process fakes of both APIs

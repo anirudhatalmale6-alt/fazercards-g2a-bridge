@@ -50,6 +50,7 @@ _NOISE_PHRASES = (
     "official website key",
     "official website",
     "pc download",
+    "pc",
 )
 # Phrases that look like noise but are part of the product's real name.
 _PROTECTED = ("game pass", "gift card", "giftcard")
@@ -114,6 +115,26 @@ _CURRENCY_SYMBOLS = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "¥": 
 
 _MONTH_WORDS = ("month", "months", "day", "days", "year", "years")
 
+# Edition qualifiers.  These are treated the same way as region and platform:
+# stripped from the core name so they cannot dilute the text comparison, and
+# compared separately.  Two *different* stated editions is a hard mismatch --
+# a Deluxe key is not a Standard key, and selling one as the other is the same
+# class of costly error as selling the wrong gift card denomination.
+_EDITION_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("goty", ("game of the year", "goty")),
+    ("ultimate", ("ultimate",)),
+    ("collectors", ("collectors", "collector s", "collection")),
+    ("definitive", ("definitive",)),
+    ("legendary", ("legendary",)),
+    ("complete", ("complete",)),
+    ("anniversary", ("anniversary",)),
+    ("enhanced", ("enhanced",)),
+    ("deluxe", ("deluxe",)),
+    ("premium", ("premium",)),
+    ("gold", ("gold",)),
+    ("standard", ("standard", "base", "vanilla")),
+)
+
 _ROMAN = {
     " i ": " 1 ", " ii ": " 2 ", " iii ": " 3 ", " iv ": " 4 ", " v ": " 5 ",
     " vi ": " 6 ", " vii ": " 7 ", " viii ": " 8 ", " ix ": " 9 ", " x ": " 10 ",
@@ -127,6 +148,7 @@ class TitleParts:
     region: str | None
     denomination: tuple[float, str | None] | None
     tokens: frozenset[str]
+    edition: str | None = None
 
     @property
     def match_key(self) -> str:
@@ -136,6 +158,22 @@ class TitleParts:
             amount, currency = self.denomination
             denom = f"|{amount:g}{currency or ''}"
         return f"{self.core}|{self.platform or ''}|{self.region or ''}{denom}"
+
+    @property
+    def anchors(self) -> tuple[str, ...]:
+        """Distinctive tokens to shortlist candidates on.
+
+        Ordered longest first but *excluding* edition words, which are common
+        across thousands of unrelated titles and make a useless anchor.
+        """
+        edition_words = {w for _e, aliases in _EDITION_ALIASES for a in aliases for w in a.split()}
+        return tuple(
+            sorted(
+                (t for t in self.tokens if (len(t) >= 4 or t.isdigit()) and t not in edition_words),
+                key=len,
+                reverse=True,
+            )
+        )
 
 
 def strip_accents(text: str) -> str:
@@ -180,6 +218,16 @@ def extract_region(text: str) -> str | None:
                     return region
             elif f" {alias} " in padded:
                 return region
+    return None
+
+
+def extract_edition(text: str) -> str | None:
+    """Find the edition qualifier in a title, if it states one."""
+    padded = f" {basic_normalize(text)} "
+    for edition, aliases in _EDITION_ALIASES:
+        for alias in aliases:
+            if f" {alias} " in padded:
+                return edition
     return None
 
 
@@ -235,6 +283,10 @@ def _strip_noise(text: str) -> str:
         for alias in aliases:
             if len(alias) > 2:
                 result = result.replace(f" {alias} ", " ")
+    for _edition, aliases in _EDITION_ALIASES:
+        for alias in aliases:
+            result = result.replace(f" {alias} ", " ")
+    result = result.replace(" edition ", " ")
     result = re.sub(r"\s+", " ", result).strip()
     # Trailing 2-letter region codes ("... india in") are packaging too.
     result = re.sub(r"\b(?:key|keys|code|codes)\b", " ", result)
@@ -246,6 +298,7 @@ def parse_title(text: str) -> TitleParts:
     platform = extract_platform(text)
     region = extract_region(text)
     denomination = extract_denomination(text)
+    edition = extract_edition(text)
 
     normalized = basic_normalize(text)
     padded = f" {normalized} "
@@ -262,6 +315,7 @@ def parse_title(text: str) -> TitleParts:
         region=region,
         denomination=denomination,
         tokens=tokens,
+        edition=edition,
     )
 
 
@@ -289,4 +343,5 @@ def parse_title_with(
         region=resolved_region,
         denomination=parts.denomination,
         tokens=parts.tokens,
+        edition=parts.edition,
     )

@@ -107,6 +107,11 @@ def score_pair(supplier: TitleParts, store: TitleParts) -> tuple[float, tuple[st
     if supplier.platform and store.platform and supplier.platform != store.platform:
         return 0.0, (f"platform mismatch {supplier.platform} vs {store.platform}",)
 
+    if supplier.edition and store.edition and supplier.edition != store.edition:
+        # A Deluxe key is not a Standard key.  Same class of error as the
+        # denomination one, so it gets the same treatment.
+        return 0.0, (f"edition mismatch {supplier.edition} vs {store.edition}",)
+
     token_overlap = _jaccard(supplier.tokens, store.tokens)
     sequence = SequenceMatcher(None, supplier.core, store.core).ratio()
 
@@ -222,19 +227,30 @@ class MatchingEngine:
         if exact:
             return list(exact)
 
-        anchors = sorted(
-            (t for t in parts.tokens if len(t) >= 4 or t.isdigit()),
-            key=len,
-            reverse=True,
-        )[:3]
+        anchors = parts.anchors[:3]
         if not anchors:
             return []
 
-        stmt = select(StoreProduct).where(StoreProduct.store_code == self.store_code)
-        for anchor in anchors[:1]:
-            stmt = stmt.where(StoreProduct.name_normalized.like(f"%{anchor}%"))
-        # A generic anchor can still match thousands of rows; cap the work.
-        return list(self.session.execute(stmt.limit(400)).scalars().all())
+        # Try each anchor in turn rather than requiring one specific token.
+        # Anchoring on a single word silently loses real matches whenever that
+        # word happens to be absent from the store's wording -- which is exactly
+        # the case the fuzzy scorer below exists to handle.
+        found: dict[int, StoreProduct] = {}
+        for anchor in anchors:
+            rows = self.session.execute(
+                select(StoreProduct)
+                .where(
+                    StoreProduct.store_code == self.store_code,
+                    StoreProduct.name_normalized.like(f"%{anchor}%"),
+                )
+                # A generic anchor can still match thousands of rows; cap the work.
+                .limit(400)
+            ).scalars()
+            for row in rows:
+                found[row.id] = row
+            if len(found) >= 400:
+                break
+        return list(found.values())
 
     # ---------------------------------------------------------------- public
     @staticmethod
