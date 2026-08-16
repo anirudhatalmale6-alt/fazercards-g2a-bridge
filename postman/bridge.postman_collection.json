@@ -1,0 +1,383 @@
+{
+  "info": {
+    "name": "FazerCards <-> G2A Bridge",
+    "description": "Every endpoint the bridge exposes, plus the upstream calls it makes to FazerCards and G2A. Set the collection variables first: base_url, admin_token, fazercards_key, g2a_client_id, g2a_client_secret.\n\nThe 'Bridge admin API' folder talks to the bridge itself. The 'FazerCards (upstream)' and 'G2A (upstream)' folders reproduce exactly the calls the bridge makes, so you can verify credentials and endpoint paths independently of the running service.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000" },
+    { "key": "admin_token", "value": "" },
+    { "key": "fazercards_base", "value": "https://api.fzr.cards" },
+    { "key": "fazercards_key", "value": "" },
+    { "key": "g2a_base", "value": "https://api.g2a.com" },
+    { "key": "g2a_client_id", "value": "" },
+    { "key": "g2a_client_secret", "value": "" },
+    { "key": "g2a_token", "value": "" },
+    { "key": "mapping_id", "value": "1" },
+    { "key": "offer_id", "value": "" },
+    { "key": "product_id", "value": "10000045649003" }
+  ],
+  "item": [
+    {
+      "name": "Bridge admin API",
+      "item": [
+        {
+          "name": "Health (no auth)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] },
+            "description": "Liveness plus a real database round-trip. This is the endpoint to point a monitor at."
+          }
+        },
+        {
+          "name": "Status",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Token", "value": "{{admin_token}}" }],
+            "url": { "raw": "{{base_url}}/status", "host": ["{{base_url}}"], "path": ["status"] },
+            "description": "Catalogue, mapping and offer counts plus the last 8 sync runs. One call that answers 'is it working'."
+          }
+        },
+        {
+          "name": "Review queue (pending mappings)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Token", "value": "{{admin_token}}" }],
+            "url": {
+              "raw": "{{base_url}}/mappings?status=pending&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["mappings"],
+              "query": [
+                { "key": "status", "value": "pending" },
+                { "key": "limit", "value": "50" }
+              ]
+            },
+            "description": "Products the matcher was not confident enough to map on its own, each with its runners-up. status can also be auto, approved, rejected or unmatched."
+          }
+        },
+        {
+          "name": "Re-score a mapping's candidates",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Token", "value": "{{admin_token}}" }],
+            "url": {
+              "raw": "{{base_url}}/mappings/{{mapping_id}}/candidates",
+              "host": ["{{base_url}}"],
+              "path": ["mappings", "{{mapping_id}}", "candidates"]
+            }
+          }
+        },
+        {
+          "name": "Approve a mapping",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Admin-Token", "value": "{{admin_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reviewed_by\": \"owner\",\n  \"note\": \"checked by hand\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/mappings/{{mapping_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["mappings", "{{mapping_id}}", "approve"]
+            },
+            "description": "Pass store_product_id to point the mapping at a different product than the one suggested. Returns 409 if that product is already claimed by another mapping."
+          }
+        },
+        {
+          "name": "Reject a mapping",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Admin-Token", "value": "{{admin_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reviewed_by\": \"owner\",\n  \"note\": \"wrong edition\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/mappings/{{mapping_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["mappings", "{{mapping_id}}", "reject"]
+            },
+            "description": "The rejected pair is remembered and never suggested again."
+          }
+        },
+        {
+          "name": "Failed API calls",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Admin-Token", "value": "{{admin_token}}" }],
+            "url": {
+              "raw": "{{base_url}}/logs/api-calls?failed_only=true&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["logs", "api-calls"],
+              "query": [
+                { "key": "failed_only", "value": "true" },
+                { "key": "limit", "value": "50" },
+                { "key": "service", "value": "g2a", "disabled": true }
+              ]
+            },
+            "description": "Every attempt of every call, with secrets scrubbed. Use correlation_id to see all attempts of one logical request."
+          }
+        }
+      ]
+    },
+    {
+      "name": "FazerCards (upstream)",
+      "item": [
+        {
+          "name": "Balance",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/balance",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "balance"]
+            },
+            "description": "Quickest check that the API key works."
+          }
+        },
+        {
+          "name": "Game keys - categories",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/gamekeys?limit=200",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "gamekeys"],
+              "query": [{ "key": "limit", "value": "200" }]
+            },
+            "description": "Cursor-paginated. Follow meta.next_cursor while meta.has_more is true."
+          }
+        },
+        {
+          "name": "Game keys - offers in a category",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/gamekeys/keys?game_id=REPLACE_ME",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "gamekeys", "keys"],
+              "query": [{ "key": "game_id", "value": "REPLACE_ME" }]
+            }
+          }
+        },
+        {
+          "name": "Gift cards - categories",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/giftcards?limit=200",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "giftcards"],
+              "query": [{ "key": "limit", "value": "200" }]
+            }
+          }
+        },
+        {
+          "name": "Gift cards - denominations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/giftcards/cards?category_id=REPLACE_ME",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "giftcards", "cards"],
+              "query": [{ "key": "category_id", "value": "REPLACE_ME" }]
+            }
+          }
+        },
+        {
+          "name": "Buy a game key (Phase 2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-API-Key", "value": "{{fazercards_key}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"game_id\": \"REPLACE_ME\",\n  \"key_id\": \"REPLACE_ME\",\n  \"quantity\": 1\n}"
+            },
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/gamekeys/order",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "gamekeys", "order"]
+            },
+            "description": "SPENDS REAL MONEY. The Idempotency-Key header is what makes a retry safe: repeating the same key returns the original order instead of buying again."
+          }
+        },
+        {
+          "name": "Read an order",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{fazercards_key}}" }],
+            "url": {
+              "raw": "{{fazercards_base}}/api/v2/orders/ord-1",
+              "host": ["{{fazercards_base}}"],
+              "path": ["api", "v2", "orders", "ord-1"]
+            },
+            "description": "How the bridge recovers after a timeout mid-purchase: re-read the order rather than buy again."
+          }
+        }
+      ]
+    },
+    {
+      "name": "G2A (upstream)",
+      "item": [
+        {
+          "name": "Get token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.access_token) {",
+                  "  pm.collectionVariables.set('g2a_token', body.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "{{g2a_client_id}}" },
+                { "key": "client_secret", "value": "{{g2a_client_secret}}" }
+              ]
+            },
+            "url": {
+              "raw": "{{g2a_base}}/oauth/token",
+              "host": ["{{g2a_base}}"],
+              "path": ["oauth", "token"]
+            },
+            "description": "Run this first. The test script stores access_token in the g2a_token variable for every other request in this folder."
+          }
+        },
+        {
+          "name": "Products list",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{g2a_token}}" }],
+            "url": {
+              "raw": "{{g2a_base}}/v1/products?page=1&includeOutOfStock=true",
+              "host": ["{{g2a_base}}"],
+              "path": ["v1", "products"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "includeOutOfStock", "value": "true" },
+                { "key": "updatedAtFrom", "value": "2026-08-01 00:00:00", "disabled": true }
+              ]
+            },
+            "description": "Page size is fixed at 20 and there is no name search - which is why the bridge mirrors this catalogue locally."
+          }
+        },
+        {
+          "name": "Offers list",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{g2a_token}}" }],
+            "url": {
+              "raw": "{{g2a_base}}/v1/offers?page=1&itemsPerPage=100&type[]=dropshipping",
+              "host": ["{{g2a_base}}"],
+              "path": ["v1", "offers"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "itemsPerPage", "value": "100" },
+                { "key": "type[]", "value": "dropshipping" }
+              ]
+            },
+            "description": "Your existing offers. This is what `cli sync adopt` reads to avoid re-creating them."
+          }
+        },
+        {
+          "name": "Create offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{g2a_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerType\": \"dropshipping\",\n  \"variants\": [\n    {\n      \"price\": { \"retail\": \"5.98\" },\n      \"productId\": \"{{product_id}}\",\n      \"active\": true,\n      \"inventory\": { \"size\": 999 },\n      \"visibility\": \"all\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{g2a_base}}/v1/offers",
+              "host": ["{{g2a_base}}"],
+              "path": ["v1", "offers"]
+            },
+            "description": "Returns 202 with a jobId - the offer does not exist yet. Poll the job to get the offer id."
+          }
+        },
+        {
+          "name": "Update offer (price / stock / active)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{g2a_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerType\": \"dropshipping\",\n  \"variant\": {\n    \"active\": true,\n    \"inventory\": { \"size\": 12 },\n    \"price\": { \"retail\": \"20.70\" }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{g2a_base}}/v1/offers/{{offer_id}}",
+              "host": ["{{g2a_base}}"],
+              "path": ["v1", "offers", "{{offer_id}}"]
+            },
+            "description": "Price changes are capped per product per hour - the bridge budgets them rather than collecting 429s."
+          }
+        },
+        {
+          "name": "Job status",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{g2a_token}}" }],
+            "url": {
+              "raw": "{{g2a_base}}/v1/jobs/REPLACE_ME",
+              "host": ["{{g2a_base}}"],
+              "path": ["v1", "jobs", "REPLACE_ME"]
+            },
+            "description": "status becomes 'complete'; elements[] carries the resourceId of the created offer, or an error code if it was rejected."
+          }
+        },
+        {
+          "name": "Seller orders",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{g2a_token}}" }],
+            "url": {
+              "raw": "{{g2a_base}}/v4/seller/orders?page=1&itemsPerPage=100",
+              "host": ["{{g2a_base}}"],
+              "path": ["v4", "seller", "orders"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "itemsPerPage", "value": "100" },
+                { "key": "statuses", "value": "completed", "disabled": true }
+              ]
+            },
+            "description": "Phase 2 input if you choose order polling over the Merchant Stock Contract API."
+          }
+        }
+      ]
+    }
+  ]
+}
